@@ -46,3 +46,4 @@ Thumbs.db
 # Documents uploadés (si vous voulez les exclure)
 data/
 uploads/
+ssh_key 

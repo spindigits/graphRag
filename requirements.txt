@@ -1,0 +1,15 @@
+# LightRAG et LLM
+lightrag-hku
+ollama
+
+# Interface graphique
+streamlit
+
+# Traitement de documents
+PyPDF2
+python-docx
+openpyxl
+pypdf
+
+# Utilitaires
+python-dotenv

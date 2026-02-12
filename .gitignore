@@ -1,0 +1,48 @@
+# Environnements virtuels
+venv/
+lightrag_env/
+env/
+ENV/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Knowledge graph storage
+storage/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Données temporaires
+*.tmp
+*.temp
+
+# Documents uploadés (si vous voulez les exclure)
+data/
+uploads/

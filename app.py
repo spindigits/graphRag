@@ -1,67 +1,97 @@
 """
-Application Streamlit pour GraphRAG avec Ollama
-Interface pour uploader des documents et interroger le RAG
+CaféIA - GraphRAG avec Ollama
+Interface Streamlit — version corrigée
+Fixes : event loop Streamlit, cache RAG instance, gestion async propre
 """
 
 import streamlit as st
-import asyncio
 import os
 from pathlib import Path
 from datetime import datetime
+
+# ─── FIX CRITIQUE ─────────────────────────────────────────────────────────────
+# nest_asyncio DOIT être appliqué avant tout import Streamlit/asyncio
+# Streamlit tourne dans son propre event loop ; nest_asyncio permet d'imbriquer
+import nest_asyncio
+nest_asyncio.apply()
+import asyncio
+# ──────────────────────────────────────────────────────────────────────────────
 
 from main import initialize_rag
 from lightrag import QueryParam
 from document_processor import DocumentProcessor
 
-# Configuration de la page
+# ─── Configuration page ───────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="CaféIA - graphRAG avec Ollama",
+    page_title="CaféIA - GraphRAG",
     page_icon="☕",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Styles CSS personnalisés
 st.markdown("""
-    <style>
-    .main-header {
-        font-size: 5rem !important;
-        font-weight: bold !important;
-        text-align: center !important;
-        color: #1f77b4 !important;
-        margin-bottom: 0.5rem !important;
-        margin-top: 1rem !important;
-        line-height: 1.2 !important;
-    }
-    .sub-header {
-        font-size: 1.2rem;
-        text-align: center;
-        color: #666;
-        margin-bottom: 2rem;
-    }
-    .upload-section {
-        background-color: #f0f2f6;
-        padding: 20px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-    }
-    .query-section {
-        background-color: #e8f4f8;
-        padding: 20px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-    }
-    .stAlert {
-        margin-top: 10px;
-    }
-    </style>
+<style>
+.main-header {
+    font-size: 2.8rem !important;
+    font-weight: 700 !important;
+    text-align: center !important;
+    color: #1f77b4 !important;
+    margin-bottom: 0.2rem !important;
+}
+.sub-header {
+    font-size: 1rem;
+    text-align: center;
+    color: #666;
+    margin-bottom: 1.5rem;
+}
+</style>
 """, unsafe_allow_html=True)
 
-# Initialisation de l'état de session
-if 'rag_initialized' not in st.session_state:
-    st.session_state.rag_initialized = False
-if 'rag_instance' not in st.session_state:
-    st.session_state.rag_instance = None
+
+# ─── Helpers async ────────────────────────────────────────────────────────────
+
+def run_async(coro):
+    """
+    Exécute une coroutine depuis du code synchrone Streamlit.
+    Utilise l'event loop existant (rendu possible par nest_asyncio).
+    """
+    loop = asyncio.get_event_loop()
+    return loop.run_until_complete(coro)
+
+
+# ─── Initialisation RAG (singleton dans session_state) ───────────────────────
+
+@st.cache_resource(show_spinner="⏳ Initialisation du knowledge graph...")
+def get_rag_instance():
+    """
+    Initialise LightRAG UNE SEULE FOIS pour toute la session Streamlit.
+    st.cache_resource persiste l'objet entre les reruns.
+    """
+    return run_async(initialize_rag())
+
+
+# ─── Fonctions RAG ────────────────────────────────────────────────────────────
+
+def insert_document(text: str, filename: str):
+    """Insère un document dans le RAG (synchrone, utilise l'event loop)."""
+    rag = get_rag_instance()
+    run_async(rag.ainsert(text))
+
+
+def query_rag(question: str, mode: str) -> str:
+    """Interroge le RAG et retourne la réponse (str)."""
+    rag = get_rag_instance()
+    result = run_async(
+        rag.aquery(question, param=QueryParam(mode=mode))
+    )
+    # Sécurité : aquery peut retourner None si le graph est vide
+    if result is None:
+        return "⚠️ Aucune réponse générée. Vérifiez que des documents sont indexés (storage/ non vide) et que le modèle Ollama répond."
+    return result
+
+
+# ─── Session state ────────────────────────────────────────────────────────────
+
 if 'uploaded_files_count' not in st.session_state:
     st.session_state.uploaded_files_count = 0
 if 'uploaded_files_list' not in st.session_state:
@@ -70,277 +100,218 @@ if 'query_history' not in st.session_state:
     st.session_state.query_history = []
 
 
-async def init_rag():
-    """Initialise l'instance RAG de manière asynchrone."""
-    # Ne pas mettre en cache pour éviter les problèmes d'event loop
-    rag = await initialize_rag()
-    return rag
-
-
-async def insert_document_to_rag(text: str, filename: str):
-    """Insère un document dans le RAG."""
-    rag = await initialize_rag()
-    await rag.ainsert(text)
-
-
-async def query_rag(question: str, mode: str):
-    """Interroge le RAG avec la question et le mode spécifiés."""
-    rag = await initialize_rag()
-    result = await rag.aquery(
-        question,
-        param=QueryParam(mode=mode)
-    )
-    return result
-
+# ─── Interface ────────────────────────────────────────────────────────────────
 
 def main():
-    # En-tête avec logos
+
+    # Header avec logos
     col1, col2, col3 = st.columns([1, 3, 1])
-
     with col1:
-        st.image("IMG/upvd_logo.png", width=150)
-
+        if os.path.exists("IMG/upvd_logo.png"):
+            st.image("IMG/upvd_logo.png", width=150)
     with col2:
         st.markdown('<p class="main-header">☕ CaféIA - GraphRAG</p>', unsafe_allow_html=True)
         st.markdown('<p class="sub-header">Interface de gestion documentaire et interrogation LLM avec Ollama</p>', unsafe_allow_html=True)
-
     with col3:
-        st.image("IMG/mensaflow_logo.jpg", width=150)
+        if os.path.exists("IMG/mensaflow_logo.jpg"):
+            st.image("IMG/mensaflow_logo.jpg", width=150)
 
-    # Vérifier qu'Ollama est disponible (test au démarrage)
-    if not st.session_state.get('ollama_checked', False):
+    # ── Vérification Ollama ──────────────────────────────────────────────────
+    if not st.session_state.get('ollama_ok', False):
         try:
             import requests
-            response = requests.get("http://localhost:11434/api/tags", timeout=2)
-            if response.status_code == 200:
-                st.session_state.ollama_checked = True
+            r = requests.get("http://localhost:11434/api/tags", timeout=3)
+            if r.status_code == 200:
+                st.session_state.ollama_ok = True
             else:
-                st.error("Ollama ne répond pas correctement")
-                st.info("Assurez-vous qu'Ollama est lancé avec: ollama serve")
+                st.error("Ollama ne répond pas — lancez `ollama serve`")
                 st.stop()
-        except Exception as e:
-            st.error("Impossible de se connecter à Ollama")
-            st.info("Assurez-vous qu'Ollama est lancé et que les modèles sont disponibles (qwen2.5:14b et nomic-embed-text)")
+        except Exception:
+            st.error("❌ Impossible de joindre Ollama sur localhost:11434")
+            st.info("Lancez : `ollama serve` dans un terminal séparé")
             st.stop()
 
-    # Barre latérale - Informations et configuration
+    # ── Sidebar ──────────────────────────────────────────────────────────────
     with st.sidebar:
         st.header("📊 Informations")
+
+        # Vérifier si le storage existe déjà (documents déjà indexés)
+        storage_exists = os.path.exists("./storage") and any(
+            os.path.isfile(os.path.join("./storage", f))
+            for f in os.listdir("./storage")
+        ) if os.path.exists("./storage") else False
+
         st.info(f"""
-        **Modèle LLM:** qwen2.5:14b
-        **Modèle Embedding:** nomic-embed-text
-        **Documents indexés:** {st.session_state.uploaded_files_count}
+        **Modèle LLM :** qwen2.5:14b
+        **Embedding :** nomic-embed-text
+        **Documents session :** {st.session_state.uploaded_files_count}
+        **Storage persistant :** {'✅ Oui' if storage_exists else '❌ Vide'}
         """)
 
+        if not storage_exists:
+            st.warning("⚠️ Aucun document indexé. Commencez par l'onglet Upload.")
+
         st.header("⚙️ Configuration")
-        st.caption("Les paramètres sont définis dans main.py")
+        st.caption("Paramètres dans `main.py` — context 32K, embedding 768 dims")
 
-        st.header("📚 Guide d'utilisation")
-        with st.expander("Comment utiliser cette application ?"):
+        with st.expander("📖 Modes de recherche"):
             st.markdown("""
-            1. **Uploader des documents** dans la section appropriée
-            2. Les documents seront automatiquement indexés dans le RAG
-            3. **Poser vos questions** dans la section de requête
-            4. Choisir le **mode de recherche** adapté à votre besoin
+            | Mode | Cas d'usage |
+            |------|-------------|
+            | **naive** | RAG classique, 1 document |
+            | **local** | Entités proches (1 hop) |
+            | **global** | Patterns transversaux |
+            | **hybrid** | Multi-hop ✅ recommandé |
             """)
 
-        with st.expander("Modes de recherche"):
-            st.markdown("""
-            - **Naive:** RAG classique, recherche simple
-            - **Local:** Entités et relations proches (1 hop)
-            - **Global:** Patterns globaux du knowledge graph
-            - **Hybrid:** Combinaison local + global (recommandé)
-            """)
-
-    # Onglets principaux
+    # ── Tabs ─────────────────────────────────────────────────────────────────
     tab1, tab2, tab3 = st.tabs(["📤 Upload Documents", "💬 Interroger le RAG", "📜 Historique"])
 
-    # --- TAB 1: Upload de documents ---
+    # ── TAB 1 : Upload ───────────────────────────────────────────────────────
     with tab1:
-        st.markdown('<div class="upload-section">', unsafe_allow_html=True)
         st.header("📤 Importer des documents")
 
         uploaded_files = st.file_uploader(
             "Glissez-déposez vos documents ou cliquez pour parcourir",
             type=['pdf', 'docx', 'xlsx', 'txt'],
             accept_multiple_files=True,
-            help="Formats supportés : PDF, DOCX, XLSX, TXT"
+            help="Formats : PDF, DOCX, XLSX, TXT — Limite 200MB/fichier"
         )
 
         if uploaded_files:
-            st.subheader(f"📁 {len(uploaded_files)} fichier(s) sélectionné(s)")
+            st.markdown(f"📁 **{len(uploaded_files)} fichier(s) sélectionné(s)**")
+            for f in uploaded_files:
+                st.caption(f"  • {f.name} ({f.size / 1024:.1f} KB)")
 
             if st.button("🚀 Indexer les documents", type="primary", use_container_width=True):
-                progress_bar = st.progress(0)
-                status_text = st.empty()
+                progress = st.progress(0)
+                status = st.empty()
+                errors = []
 
                 for idx, uploaded_file in enumerate(uploaded_files):
+                    status.text(f"⏳ Traitement : {uploaded_file.name} ...")
                     try:
-                        status_text.text(f"Traitement de {uploaded_file.name}...")
-
-                        # Extraire le texte selon le format
-                        file_extension = Path(uploaded_file.name).suffix
-                        text = DocumentProcessor.process_uploaded_file(uploaded_file, file_extension)
+                        ext = Path(uploaded_file.name).suffix
+                        text = DocumentProcessor.process_uploaded_file(uploaded_file, ext)
 
                         if text and text.strip():
-                            # Insérer dans le RAG
-                            asyncio.run(insert_document_to_rag(text, uploaded_file.name))
-                            st.success(f"✅ {uploaded_file.name} indexé avec succès!")
+                            insert_document(text, uploaded_file.name)
+                            st.success(f"✅ {uploaded_file.name} indexé")
                             st.session_state.uploaded_files_count += 1
-                            # Ajouter à la liste des fichiers uploadés
-                            if uploaded_file.name not in st.session_state.uploaded_files_list:
+                            if uploaded_file.name not in [f['name'] for f in st.session_state.uploaded_files_list]:
                                 st.session_state.uploaded_files_list.append({
                                     'name': uploaded_file.name,
                                     'size': uploaded_file.size,
-                                    'type': file_extension,
+                                    'type': ext,
                                     'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 })
                         else:
-                            st.warning(f"⚠️ {uploaded_file.name} ne contient pas de texte exploitable")
+                            st.warning(f"⚠️ {uploaded_file.name} — texte vide ou illisible")
 
                     except Exception as e:
-                        st.error(f"❌ Erreur avec {uploaded_file.name}: {str(e)}")
+                        err_msg = str(e)
+                        errors.append((uploaded_file.name, err_msg))
+                        st.error(f"❌ {uploaded_file.name} : {err_msg}")
 
-                    # Mise à jour de la barre de progression
-                    progress_bar.progress((idx + 1) / len(uploaded_files))
+                    progress.progress((idx + 1) / len(uploaded_files))
 
-                status_text.text("✨ Indexation terminée!")
-                st.balloons()
+                status.text("✨ Indexation terminée !")
+                if not errors:
+                    st.balloons()
+                else:
+                    st.warning(f"{len(errors)} fichier(s) en erreur — voir détails ci-dessus")
 
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # Afficher les formats supportés
         with st.expander("ℹ️ Formats supportés"):
             st.markdown("""
-            - **PDF** (.pdf) : Documents Adobe PDF
-            - **Word** (.docx) : Documents Microsoft Word
-            - **Excel** (.xlsx) : Feuilles de calcul Excel
-            - **Texte** (.txt) : Fichiers texte brut
+            - **PDF** — texte extractible (pas d'OCR sur images scannées)
+            - **DOCX** — Word, paragraphes + tableaux
+            - **XLSX** — Excel, toutes feuilles
+            - **TXT** — UTF-8 / Latin-1
             """)
 
-    # --- TAB 2: Interrogation du RAG ---
+    # ── TAB 2 : Query ────────────────────────────────────────────────────────
     with tab2:
-        st.markdown('<div class="query-section">', unsafe_allow_html=True)
         st.header("💬 Poser une question au RAG")
 
-        # Zone de saisie de la question
         question = st.text_area(
             "Votre question :",
             height=100,
             placeholder="Ex: Quel technicien certifié est disponible en Occitanie ?",
-            help="Posez une question sur les documents que vous avez indexés"
         )
 
-        col1, col2 = st.columns([3, 1])
-
-        with col1:
+        col_mode, col_btn = st.columns([3, 1])
+        with col_mode:
             query_mode = st.selectbox(
-                "Mode de recherche :",
+                "Mode de recherche",
                 options=['hybrid', 'naive', 'local', 'global'],
                 index=0,
-                help="Hybrid est recommandé pour des questions complexes"
             )
+        with col_btn:
+            st.write("")
+            st.write("")
+            search_btn = st.button("🔍 Rechercher", type="primary", use_container_width=True)
 
-        with col2:
-            st.write("")  # Spacer
-            st.write("")  # Spacer
-            query_button = st.button("🔍 Rechercher", type="primary", use_container_width=True)
+        if search_btn:
+            if not question.strip():
+                st.warning("⚠️ Saisissez une question.")
+            else:
+                with st.spinner(f"Recherche en mode **{query_mode}**..."):
+                    try:
+                        result = query_rag(question, query_mode)
 
-        if query_button and question.strip():
-            try:
-                with st.spinner(f"Recherche en mode {query_mode}..."):
-                    result = asyncio.run(query_rag(question, query_mode))
+                        st.subheader("📝 Réponse")
+                        st.markdown(result)
 
-                    # Afficher le résultat
-                    st.subheader("📝 Réponse :")
-                    st.markdown(result)
+                        # Sources
+                        with st.expander("📚 Détail du retrieval"):
+                            mode_info = {
+                                "naive":  "🔍 **Naive** — similarité vectorielle sur chunks",
+                                "local":  "🔗 **Local** — entités proches dans le graph (1 hop)",
+                                "global": "🌐 **Global** — patterns transversaux du graph",
+                                "hybrid": "🎯 **Hybrid** — local + global, optimal pour multi-hop",
+                            }
+                            st.info(mode_info.get(query_mode, query_mode))
 
-                    # Section Sources du Retrieval
-                    with st.expander("📚 Sources utilisées pour cette réponse", expanded=False):
-                        st.markdown(f"""
-                        **Mode de recherche :** `{query_mode}`
+                            if st.session_state.uploaded_files_list:
+                                st.markdown("**Documents indexés cette session :**")
+                                for fi in st.session_state.uploaded_files_list:
+                                    st.caption(f"• {fi['name']} ({fi['size']/1024:.1f} KB) — {fi['timestamp']}")
+                            else:
+                                st.caption("Documents indexés depuis une session précédente (storage/ persistant)")
 
-                        **Type de retrieval :**
-                        """)
+                        # Historique
+                        st.session_state.query_history.append({
+                            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            'question': question,
+                            'mode': query_mode,
+                            'answer': result
+                        })
 
-                        if query_mode == "naive":
-                            st.info("🔍 **RAG classique** - Recherche par similarité vectorielle dans les chunks de documents")
-                        elif query_mode == "local":
-                            st.info("🔗 **Graph local** - Entités et relations proches (1 hop) dans le knowledge graph")
-                        elif query_mode == "global":
-                            st.info("🌐 **Graph global** - Patterns et structures globales du knowledge graph")
-                        elif query_mode == "hybrid":
-                            st.info("🎯 **Hybrid (Recommandé)** - Combinaison de recherche locale ET globale pour des réponses multi-hop complexes")
+                    except Exception as e:
+                        st.error(f"❌ Erreur : {str(e)}")
+                        st.info("Vérifiez que Ollama tourne et que les modèles sont disponibles : `ollama list`")
 
-                        st.markdown("---")
-                        st.markdown("### 📄 Documents indexés dans le knowledge graph")
-
-                        if st.session_state.uploaded_files_list:
-                            for idx, file_info in enumerate(st.session_state.uploaded_files_list, 1):
-                                st.markdown(f"""
-                                **{idx}. {file_info['name']}**
-                                - 📁 Type: `{file_info['type']}`
-                                - 📊 Taille: {file_info['size'] / 1024:.2f} KB
-                                - 🕐 Indexé le: {file_info['timestamp']}
-                                """)
-                        else:
-                            st.warning("Aucun document indexé pour le moment")
-
-                        st.markdown("---")
-                        st.markdown(f"""
-                        **Total de documents :** {st.session_state.uploaded_files_count}
-
-                        **Répertoire de stockage :** `./storage/`
-
-                        💡 *Les sources proviennent du knowledge graph construit à partir de ces documents.*
-                        """)
-
-                        # Lien vers le dossier storage pour inspection manuelle
-                        if os.path.exists("./storage"):
-                            st.caption("Les fichiers du knowledge graph sont disponibles dans le dossier `storage/`")
-
-                    # Ajouter à l'historique
-                    st.session_state.query_history.append({
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'question': question,
-                        'mode': query_mode,
-                        'answer': result
-                    })
-
-                    st.success("✅ Réponse générée avec succès!")
-
-            except Exception as e:
-                st.error(f"❌ Erreur lors de la requête : {str(e)}")
-
-        elif query_button and not question.strip():
-            st.warning("⚠️ Veuillez saisir une question avant de lancer la recherche.")
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # --- TAB 3: Historique ---
+    # ── TAB 3 : Historique ───────────────────────────────────────────────────
     with tab3:
         st.header("📜 Historique des requêtes")
 
         if st.session_state.query_history:
-            # Bouton pour effacer l'historique
             if st.button("🗑️ Effacer l'historique"):
                 st.session_state.query_history = []
                 st.rerun()
 
-            # Afficher l'historique en ordre inverse (plus récent en premier)
-            for idx, query in enumerate(reversed(st.session_state.query_history)):
-                with st.expander(f"🕐 {query['timestamp']} - Mode: {query['mode']}"):
-                    st.markdown(f"**Question:** {query['question']}")
+            for query in reversed(st.session_state.query_history):
+                with st.expander(f"🕐 {query['timestamp']} — [{query['mode']}] {query['question'][:60]}..."):
+                    st.markdown(f"**Question :** {query['question']}")
                     st.markdown("---")
-                    st.markdown(f"**Réponse:**")
                     st.markdown(query['answer'])
         else:
-            st.info("Aucune requête dans l'historique. Commencez par poser une question dans l'onglet 'Interroger le RAG'.")
+            st.info("Aucune requête pour l'instant.")
 
     # Footer
     st.markdown("---")
     st.markdown(
-        '<p style="text-align: center; color: #888;">☕ CaféIA - Powered by GraphRAG & Ollama</p>',
+        '<p style="text-align:center; color:#888;">☕ CaféIA — Powered by LightRAG & Ollama</p>',
         unsafe_allow_html=True
     )
 
